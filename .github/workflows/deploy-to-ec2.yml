@@ -1,0 +1,175 @@
+
+name: CI/CD to EC2 
+
+ 
+
+ 
+
+on: 
+
+  push: 
+
+    branches: 
+
+      - main 
+
+ 
+
+ 
+
+jobs: 
+
+  build: 
+
+    runs-on: ubuntu-latest 
+
+    outputs: 
+
+      jar-name: ${{ steps.set-output.outputs.jar_name }} 
+
+ 
+
+ 
+
+    steps: 
+
+      - name: Checkout Code 
+
+        uses: actions/checkout@v4 
+
+ 
+
+ 
+
+      - name: Set up JDK 17 
+
+        uses: actions/setup-java@v4 
+
+        with: 
+
+          distribution: temurin 
+
+          java-version: 17 
+
+ 
+
+ 
+
+      - name: Build JAR 
+
+        run: mvn clean install -DskipTests 
+
+ 
+
+ 
+
+      - name: Set JAR name 
+
+        id: set-output 
+
+        run: echo "jar_name=cicd-0.0.1-SNAPSHOT.jar" >> $GITHUB_OUTPUT 
+
+ 
+
+ 
+
+      - name: Upload JAR artifact 
+
+        uses: actions/upload-artifact@v4 
+
+        with: 
+
+          name: jar 
+
+          path: target/cicd-0.0.1-SNAPSHOT.jar 
+
+ 
+
+ 
+
+  deploy: 
+
+    needs: build 
+
+    runs-on: ubuntu-latest 
+
+   
+
+    steps: 
+
+      - name: Download JAR artifact 
+
+        uses: actions/download-artifact@v4 
+
+        with: 
+
+          name: jar 
+
+          path: . 
+
+   
+
+      - name: Verify downloaded files 
+
+        run: ls -la 
+
+   
+
+      - name: Setup SSH key 
+
+        run: | 
+
+          echo "${{ secrets.EC2_SSH_KEY }}" > private_key.pem 
+
+          chmod 600 private_key.pem 
+
+   
+
+      - name: Copy JAR to EC2 
+
+        run: | 
+
+          scp -i private_key.pem -o StrictHostKeyChecking=no ./cicd-0.0.1-SNAPSHOT.jar ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/ubuntu/cicd/cicd-0.0.1-SNAPSHOT.new 
+
+   
+
+      - name: Deploy JAR and restart service 
+
+        run: | 
+
+          ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF' 
+
+            set -e 
+
+            # Create backup folder 
+
+            mkdir -p /home/ubuntu/cicd/backups 
+
+            # Backup old JAR if exists 
+
+            if [ -f /home/ubuntu/cicd/cicd-0.0.1-SNAPSHOT.jar ]; then 
+
+              cp /home/ubuntu/cicd/cicd-0.0.1-SNAPSHOT.jar /home/ubuntu/cicd/backups/ci-cd-spring-boot-$(date +%F-%H-%M-%S).jar 
+
+            fi 
+
+            # Replace with new JAR 
+
+            mv /home/ubuntu/cicd/cicd-0.0.1-SNAPSHOT.jar.new /home/ubuntu/cicd/cicd-0.0.1-SNAPSHOT.jar 
+
+            # Restart systemd service 
+
+            sudo systemctl daemon-reload 
+
+            sudo systemctl restart cicd.service 
+
+            sudo systemctl status cicd.service --no-pager 
+
+          EOF 
+
+   
+
+      - name: Clean up private key 
+
+        run: rm -f private_key.pem 
+
